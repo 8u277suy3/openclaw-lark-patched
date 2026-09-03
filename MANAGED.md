@@ -32,10 +32,30 @@
 
 打补丁前的原始文件备份在 `patches/bak/`。
 
+## 功能移植：对标 openclaw-lark-2（2026-09-03，v2026.7.16-p1）
+
+自 Mirr0ch1/openclaw-lark-2@cca892b（2026.9.4）按文件粒度移植 8 项能力，共改 28 个文件（+4 新增）：
+
+| 能力 | 落点 |
+|------|------|
+| F1 PIN 消息操作（pin/unpin/list-pins）| `src/messaging/outbound/pins.js` + actions.js 挂接 |
+| F2 多图合并一条 post（multiImageMode，默认 post，失败回退逐张）| `src/messaging/outbound/multi-image-mode.js` + deliver/send 挂接 + config-schema |
+| F3 footer 第 7 项 provider | `src/core/footer-config.js` + `card/builder.js` |
+| F4 工具调用动态展示默认开 | `card/tool-use-config.js` |
+| F5 群聊流式卡片（replyMode.group 体验对齐）| `card/streaming-card-controller.js` |
+| F6 ask_user 按钮卡片（含“其他答案”、群聊全员可交互）| `card/ask-user-gateway-card.js` + dispatch/handler/event-handlers/monitor 挂接 |
+| — 删除 feishu_ask_user_question（阿訫令：引发工具调用错误循环）| `src/tools/ask-user-question.*` 已删；index.js/plugin.json 同步移除注册与契约 |
+| F7 SSRF 全量防护 | `src/core/ssrf.js` + feishu-fetch/raw-request/lark-client/uat-client/device-flow/oauth/mcp-shared/media 共 10 文件 |
+| F8 vitest 测试基座 | `tests/` 10 文件 97 用例全绿（本地需 junction 链接宿主 openclaw：`node_modules/openclaw` → `%APPDATA%/npm/node_modules/openclaw`） |
+
+验证：fork 自带测试套件对本移植 **97/97 通过**；`node --check` 全部语法 OK；index.js 可加载（id=openclaw-lark 保持身份不变，UA 保持 openclaw-lark/…）。
+
+注意：fork 对 4 个 kimi 补丁文件做了自己的等价修复（index plugin-sdk/core、reply-dispatcher→channel-message、token-store/version 去 import.meta）；移植后以 fork 版本为准，kimi 补丁语义被覆盖保留。
+
 ## 更新策略
 
 - 日常改动：直接修改 `src/**/*.js` 编译产物（CommonJS、无构建步骤，同步部署目录后重启网关生效）；
-- 官方发新版：解包新 tarball 替换工作树 → 按 `patches/*.diff` 重放上面 4 处（通常仍需全部）→ 回归验证；
+- 官方发新版：解包新 tarball 替换工作树 → 重放 `patches/*.diff`（kimi 4 处，大部分已被 fork 移植版覆盖）+ 重新应用 `scripts/check-tools.js` 验证 → 回归；
 - 除以上 4 文件外，工作树与 2026.7.16 原件**逐字节一致**（426 文件哈希核对）。
 
 ## 本机部署位置（生产实例）
