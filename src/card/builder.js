@@ -204,6 +204,13 @@ function formatFooterRuntimeSegments(params) {
             primaryEn.push(model);
         }
     }
+    if (footer?.provider && metrics?.provider) {
+        const provider = metrics.provider.trim();
+        if (provider) {
+            primaryZh.push(provider);
+            primaryEn.push(provider);
+        }
+    }
     // --- Detail line: tokens, cache, context ---
     if (footer?.tokens && metrics) {
         const inTokens = typeof metrics.inputTokens === 'number' ? Math.max(0, metrics.inputTokens) : undefined;

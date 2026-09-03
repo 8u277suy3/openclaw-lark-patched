@@ -55,7 +55,7 @@ async function monitorSingleAccount(params) {
     const chatHistories = new Map();
     const ctx = {
         get cfg() {
-            return lark_client_1.LarkClient.runtime.config.loadConfig();
+            return lark_client_1.LarkClient.runtime.config.current();
         },
         lark,
         accountId,

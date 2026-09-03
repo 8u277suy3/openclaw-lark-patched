@@ -290,7 +290,7 @@ async function handleFeishuMessage(params) {
         });
     }
     catch (err) {
-        error(`feishu[${account.accountId}]: failed to dispatch message: ${String(err)}`);
+        error(`feishu[${account.accountId}]: failed to dispatch message: ${String(err)}\nSTACK: ${err?.stack ?? 'no-stack'}`);
         logger.error(`dispatch failed: ${String(err)} (elapsed=${(0, lark_ticket_1.ticketElapsed)()}ms)`);
     }
 }

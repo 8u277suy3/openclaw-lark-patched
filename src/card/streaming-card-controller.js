@@ -15,6 +15,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.StreamingCardController = void 0;
 exports.prepareTerminalCardContent = prepareTerminalCardContent;
 const promises_1 = require("node:fs/promises");
+const os = require("node:os");
+const path = require("node:path");
 const agent_runtime_1 = require("openclaw/plugin-sdk/agent-runtime");
 const reply_runtime_1 = require("openclaw/plugin-sdk/reply-runtime");
 const api_error_1 = require("../core/api-error.js");
@@ -89,112 +91,66 @@ class StreamingCardController {
             const runtime = lark_client_1.LarkClient.runtime;
             if (!runtime)
                 return undefined;
-            const cfgWithSession = this.deps.cfg;
-            const sessionStorePath = cfgWithSession.sessions?.store ?? cfgWithSession.session?.store;
-            const key = this.deps.sessionKey.trim().toLowerCase();
-            // WORKAROUND: SDK session key round-trip bug.
-            // The SDK's toAgentRequestSessionKey() strips the agent scope from keys
-            // like "agent:hr:main" → "main", then toAgentStoreSessionKey() rebuilds
-            // using the default agent ID → "agent:main:main".  This means metrics
-            // written by the SDK always land under "agent:<defaultAgentId>:…"
-            // regardless of the account-scoped agent ID the plugin routing generated.
-            // Fallback: when the primary key misses, try replacing the agent-id
-            // segment with the resolved default agent ID.
-            // TODO: remove once the SDK preserves the original agent ID during the
-            // request→store key round-trip.
-            const defaultAgentId = (0, agent_runtime_1.resolveDefaultAgentId)(this.deps.cfg);
-            const fallbackKey = key.replace(/^(agent):[^:]+:/, `$1:${defaultAgentId}:`);
-            const candidateKeys = fallbackKey !== key ? [key, fallbackKey] : [key];
-            const sessionApi = runtime.agent?.session;
-            if (sessionApi?.resolveStorePath && sessionApi?.loadSessionStore) {
-                const storePath = sessionApi.resolveStorePath(sessionStorePath, { agentId: this.deps.agentId });
-                const store = sessionApi.loadSessionStore(storePath);
-                let entry;
-                let matchedKey;
-                for (const candidate of candidateKeys) {
-                    const val = store[candidate];
-                    if (val && typeof val === 'object') {
-                        entry = val;
-                        matchedKey = candidate;
-                        break;
-                    }
-                }
-                if (!entry) {
-                    log.debug('footer metrics lookup: session entry missing', {
-                        sessionKey: this.deps.sessionKey,
-                        candidateKeys,
-                        storePath,
-                        source: 'runtime.agent.session',
-                    });
+            // OpenClaw 2.0: per-session usage metrics live in the agent
+            // transcript SQLite (transcript_events.message.usage), not the
+            // legacy sessions.json file that 2.0 migrated away.
+            const agentId = this.deps.agentId;
+            const sessionKey = this.deps.sessionKey.trim().toLowerCase();
+            const dbPath = path.join(os.homedir(), '.openclaw', 'agents', agentId, 'agent', 'openclaw-agent.sqlite');
+            const { DatabaseSync } = require('node:sqlite');
+            const db = new DatabaseSync(dbPath, { readOnly: true });
+            try {
+                const window = db.prepare('SELECT session_id FROM session_windows WHERE lower(session_key) = ? ORDER BY updated_at DESC LIMIT 1').get(sessionKey);
+                if (!window)
                     return undefined;
-                }
+                const row = db.prepare("SELECT event_json FROM transcript_events WHERE session_id = ? AND event_json LIKE '%usage%' ORDER BY rowid DESC LIMIT 1").get(window.session_id);
+                if (!row)
+                    return undefined;
+                const ev = JSON.parse(row.event_json);
+                const msg = ev?.message ?? {};
+                const u = msg.usage;
+                if (!u)
+                    return undefined;
                 const metrics = {
-                    inputTokens: typeof entry.inputTokens === 'number' ? entry.inputTokens : undefined,
-                    outputTokens: typeof entry.outputTokens === 'number' ? entry.outputTokens : undefined,
-                    cacheRead: typeof entry.cacheRead === 'number' ? entry.cacheRead : undefined,
-                    cacheWrite: typeof entry.cacheWrite === 'number' ? entry.cacheWrite : undefined,
-                    totalTokens: typeof entry.totalTokens === 'number' ? entry.totalTokens : undefined,
-                    totalTokensFresh: typeof entry.totalTokensFresh === 'boolean' ? entry.totalTokensFresh : undefined,
-                    contextTokens: typeof entry.contextTokens === 'number' ? entry.contextTokens : undefined,
-                    model: typeof entry.model === 'string' ? entry.model : undefined,
+                    inputTokens: typeof u.input === 'number' ? u.input : undefined,
+                    outputTokens: typeof u.output === 'number' ? u.output : undefined,
+                    cacheRead: typeof u.cacheRead === 'number' ? u.cacheRead : undefined,
+                    cacheWrite: typeof u.cacheWrite === 'number' ? u.cacheWrite : undefined,
+                    totalTokens: typeof u.totalTokens === 'number' ? u.totalTokens : undefined,
+                    model: typeof msg.model === 'string' ? msg.model : undefined,
+                    provider: typeof msg.provider === 'string' ? msg.provider : undefined,
+                    agentId,
                 };
-                log.debug('footer metrics lookup: session entry found', {
+                // Best-effort context window from the model catalog in cfg.
+                const ctxWindow = this.resolveContextWindow(msg.provider, msg.model);
+                if (ctxWindow != null)
+                    metrics.contextTokens = ctxWindow;
+                log.debug('footer metrics lookup: found usage from agent transcript sqlite', {
                     sessionKey: this.deps.sessionKey,
-                    matchedKey,
-                    storePath,
-                    source: 'runtime.agent.session',
+                    agentId,
                 });
                 return metrics;
             }
-            const channelSession = runtime.channel?.session;
-            if (!channelSession?.resolveStorePath) {
-                return undefined;
+            finally {
+                db.close();
             }
-            const storePath = channelSession.resolveStorePath(sessionStorePath, { agentId: this.deps.agentId });
-            const raw = await (0, promises_1.readFile)(storePath, 'utf8');
-            const parsed = JSON.parse(raw);
-            const store = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-                ? parsed
-                : {};
-            let entry;
-            let matchedKey;
-            for (const candidate of candidateKeys) {
-                const val = store[candidate];
-                if (val && typeof val === 'object') {
-                    entry = val;
-                    matchedKey = candidate;
-                    break;
-                }
-            }
-            if (!entry) {
-                log.debug('footer metrics lookup: session entry missing', {
-                    sessionKey: this.deps.sessionKey,
-                    candidateKeys,
-                    storePath,
-                    source: 'channel.session.file',
-                });
-                return undefined;
-            }
-            const metrics = {
-                inputTokens: typeof entry.inputTokens === 'number' ? entry.inputTokens : undefined,
-                outputTokens: typeof entry.outputTokens === 'number' ? entry.outputTokens : undefined,
-                cacheRead: typeof entry.cacheRead === 'number' ? entry.cacheRead : undefined,
-                cacheWrite: typeof entry.cacheWrite === 'number' ? entry.cacheWrite : undefined,
-                totalTokens: typeof entry.totalTokens === 'number' ? entry.totalTokens : undefined,
-                totalTokensFresh: typeof entry.totalTokensFresh === 'boolean' ? entry.totalTokensFresh : undefined,
-                contextTokens: typeof entry.contextTokens === 'number' ? entry.contextTokens : undefined,
-                model: typeof entry.model === 'string' ? entry.model : undefined,
-            };
-            log.debug('footer metrics lookup: session entry found', {
-                sessionKey: this.deps.sessionKey,
-                matchedKey,
-                storePath,
-                source: 'channel.session.file',
-            });
-            return metrics;
         }
         catch (err) {
             log.warn('footer metrics lookup failed', { error: String(err), sessionKey: this.deps.sessionKey });
+            return undefined;
+        }
+    }
+    /** Resolve a model's context window from cfg.models.providers. */
+    resolveContextWindow(provider, model) {
+        try {
+            const providers = this.deps.cfg?.models?.providers ?? {};
+            const pcfg = providers[provider];
+            if (!pcfg || !Array.isArray(pcfg.models))
+                return undefined;
+            const found = pcfg.models.find((m) => m && m.id === model);
+            return typeof found?.contextWindow === 'number' ? found.contextWindow : undefined;
+        }
+        catch {
             return undefined;
         }
     }
@@ -258,6 +214,15 @@ class StreamingCardController {
     }
     get shouldDisplayToolUse() {
         return this.deps.toolUseDisplay.showToolUse;
+    }
+    /**
+     * Activity-only mode (static/group replies): the controller drives a
+     * lightweight tool-activity card only — text/reasoning streaming is
+     * handled by the static deliver() path, so those callbacks are no-ops
+     * and the card is removed once the final reply is delivered.
+     */
+    get activityOnly() {
+        return this.deps.activityOnly === true;
     }
     computeToolUseDisplay() {
         if (!this.shouldDisplayToolUse)
@@ -355,6 +320,8 @@ class StreamingCardController {
     async onDeliver(payload) {
         if (!this.shouldProceed('onDeliver'))
             return;
+        if (this.activityOnly)
+            return;
         const text = payload.text ?? '';
         if (!text.trim())
             return;
@@ -393,6 +360,8 @@ class StreamingCardController {
     async onReasoningStream(payload) {
         if (!this.shouldProceed('onReasoningStream'))
             return;
+        if (this.activityOnly)
+            return;
         await this.ensureCardCreated();
         if (!this.shouldProceed('onReasoningStream.postCreate'))
             return;
@@ -414,14 +383,48 @@ class StreamingCardController {
             return;
         if (!this.shouldDisplayToolUse)
             return;
-        if (payload.phase && payload.phase !== 'start')
+        const phase = payload.phase ?? 'start';
+        // 把工具生命周期写入 trace store，卡片才能渲染出"正在调用什么工具"的步骤。
+        if (phase === 'start') {
+            (0, tool_use_trace_store_1.recordToolUseStart)({
+                sessionKey: this.deps.sessionKey,
+                toolName: payload.name,
+                toolParams: payload.args,
+                toolCallId: payload.toolCallId,
+            });
+        }
+        else if (phase === 'end' || phase === 'error' || phase === 'result') {
+            (0, tool_use_trace_store_1.recordToolUseEnd)({
+                sessionKey: this.deps.sessionKey,
+                toolName: payload.name,
+                toolParams: payload.args,
+                toolCallId: payload.toolCallId,
+                error: phase === 'error' ? 'tool failed' : undefined,
+            });
+        }
+        else {
             return;
-        this.markToolUseActivity();
+        }
+        if (phase === 'start') {
+            this.markToolUseActivity();
+        }
+        else {
+            this.captureToolUseElapsed();
+        }
         await this.ensureCardCreated();
         if (!this.shouldProceed('onToolStart.postCreate'))
             return;
         if (!this.cardKit.cardMessageId)
             return;
+        if (this.activityOnly) {
+            if (this.cardKit.cardKitCardId) {
+                await this.throttledToolUseStatusUpdate();
+            }
+            else {
+                await this.throttledCardUpdate();
+            }
+            return;
+        }
         if (!this.text.accumulatedText && this.cardKit.cardKitCardId) {
             await this.throttledToolUseStatusUpdate();
             return;
@@ -439,6 +442,15 @@ class StreamingCardController {
             return;
         if (!this.cardKit.cardMessageId)
             return;
+        if (this.activityOnly) {
+            if (this.cardKit.cardKitCardId) {
+                await this.throttledToolUseStatusUpdate();
+            }
+            else {
+                await this.throttledCardUpdate();
+            }
+            return;
+        }
         if (!this.text.accumulatedText && this.cardKit.cardKitCardId) {
             await this.throttledToolUseStatusUpdate();
             return;
@@ -447,6 +459,8 @@ class StreamingCardController {
     }
     async onPartialReply(payload) {
         if (!this.shouldProceed('onPartialReply'))
+            return;
+        if (this.activityOnly)
             return;
         // Use splitReasoningText (consistent with onDeliver/onReasoningStream)
         // to extract <think> tag content before stripping it from the answer.
@@ -497,6 +511,10 @@ class StreamingCardController {
         if (this.guard.terminate('onError', err))
             return;
         log.error(`${info.kind} reply failed`, { error: String(err) });
+        if (this.activityOnly) {
+            await this.deleteActivityCard('onError');
+            return;
+        }
         this.captureToolUseElapsed();
         this.finalizeCard('onError', 'error');
         await this.flush.waitForFlush();
@@ -555,6 +573,11 @@ class StreamingCardController {
         if (this.isTerminalPhase)
             return;
         this.captureToolUseElapsed();
+        if (this.activityOnly) {
+            // 静态模式：最终回复已通过 deliver() 单独发送，删除活动卡即可。
+            await this.deleteActivityCard('onIdle');
+            return;
+        }
         this.finalizeCard('onIdle', 'normal');
         await this.flush.waitForFlush();
         if (this.cardCreationPromise) {
@@ -651,8 +674,38 @@ class StreamingCardController {
         });
         this.dispatchFullyComplete = true;
     }
+    /**
+     * Activity-only mode terminal: remove the tool-activity card.
+     *
+     * The final reply is delivered as a separate static message, so the
+     * ephemeral activity card must be deleted rather than finalized into
+     * the answer. Failure to delete (e.g. permission) is non-fatal.
+     */
+    async deleteActivityCard(source) {
+        try {
+            if (this.cardKit.cardMessageId) {
+                await (0, send_1.deleteMessageFeishu)({
+                    cfg: this.deps.cfg,
+                    messageId: this.cardKit.cardMessageId,
+                    accountId: this.deps.accountId,
+                });
+                log.info('activity card removed', { source, messageId: this.cardKit.cardMessageId });
+            }
+        }
+        catch (err) {
+            log.warn('activity card delete failed', { source, error: String(err) });
+        }
+        finally {
+            this.transition('completed', 'deleteActivityCard', source);
+            (0, tool_use_trace_store_1.clearToolUseTraceRun)(this.deps.sessionKey);
+        }
+    }
     async abortCard() {
         try {
+            if (this.activityOnly) {
+                await this.deleteActivityCard('abortCard');
+                return;
+            }
             this.captureToolUseElapsed();
             if (!this.transition('aborted', 'abortCard', 'abort'))
                 return;
