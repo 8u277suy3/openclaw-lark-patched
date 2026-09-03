@@ -12,6 +12,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.createPinFeishu = createPinFeishu;
 exports.removePinFeishu = removePinFeishu;
 exports.listPinsFeishu = listPinsFeishu;
+exports.resolveP2PChatIdFeishu = resolveP2PChatIdFeishu;
 const lark_client_1 = require("../../core/lark-client.js");
 
 /**
@@ -71,6 +72,39 @@ async function removePinFeishu({ cfg, messageId, accountId }) {
         path: { message_id: messageId },
     });
     assertLarkOk(response, `unpin message ${messageId}`);
+}
+
+/**
+ * Resolve the p2p chat id (oc_xxx) between this app and a user.
+ *
+ * Bot-identity equivalent of message-read's user-OAuth batch_query:
+ * lists chats shared with the given open_id (`im/v1/chats` with user_id
+ * filter) and returns the p2p one. Throws when no p2p chat exists.
+ */
+async function resolveP2PChatIdFeishu({ cfg, openId, accountId }) {
+    const client = lark_client_1.LarkClient.fromCfg(cfg, accountId).sdk;
+    let pageToken;
+    let scanned = 0;
+    do {
+        const response = await client.im.chat.list({
+            params: {
+                user_id: openId,
+                user_id_type: 'open_id',
+                page_size: 100,
+                ...(pageToken ? { page_token: pageToken } : {}),
+            },
+        });
+        assertLarkOk(response, `list chats for ${openId}`);
+        const items = response.data?.items ?? [];
+        for (const chat of items) {
+            if (chat.chat_mode === 'p2p' && typeof chat.chat_id === 'string' && chat.chat_id) {
+                return chat.chat_id;
+            }
+        }
+        scanned += items.length;
+        pageToken = response.data?.has_more ? response.data?.page_token : undefined;
+    } while (pageToken && scanned < 1000);
+    throw new Error(`no p2p chat found with open_id=${openId} (has this user ever messaged the bot?)`);
 }
 
 /**

@@ -13,6 +13,7 @@ beforeEach(() => {
     pins: [],
     hasMore: false,
   });
+  vi.spyOn(pinsModule, "resolveP2PChatIdFeishu").mockResolvedValue("oc_p2p1");
 });
 
 afterEach(() => {
@@ -113,15 +114,45 @@ describe("message actions — pin routing", () => {
     );
   });
 
-  it("ignores user: targets and falls back to current conversation", async () => {
+  it("resolves user: target to p2p chat via bot chat list", async () => {
     await feishuMessageActions.handleAction({
       action: "list-pins",
       params: { target: "user:ou_abc" },
       cfg: {},
-      toolContext: { currentChannelId: "oc_43" },
     });
+    expect(pinsModule.resolveP2PChatIdFeishu).toHaveBeenCalledWith(
+      expect.objectContaining({ openId: "ou_abc" }),
+    );
     expect(pinsModule.listPinsFeishu).toHaveBeenCalledWith(
-      expect.objectContaining({ chatId: "oc_43" }),
+      expect.objectContaining({ chatId: "oc_p2p1" }),
+    );
+  });
+
+  it("resolves synthetic currentChannelId (DM) for bare list-pins", async () => {
+    await feishuMessageActions.handleAction({
+      action: "list-pins",
+      params: {},
+      cfg: {},
+      toolContext: { currentChannelId: "user:ou_def" },
+    });
+    expect(pinsModule.resolveP2PChatIdFeishu).toHaveBeenCalledWith(
+      expect.objectContaining({ openId: "ou_def" }),
+    );
+    expect(pinsModule.listPinsFeishu).toHaveBeenCalledWith(
+      expect.objectContaining({ chatId: "oc_p2p1" }),
+    );
+  });
+
+  it("prefers explicit oc_ chatId over synthetic fallback", async () => {
+    await feishuMessageActions.handleAction({
+      action: "list-pins",
+      params: { chatId: "oc_explicit" },
+      cfg: {},
+      toolContext: { currentChannelId: "user:ou_def" },
+    });
+    expect(pinsModule.resolveP2PChatIdFeishu).not.toHaveBeenCalled();
+    expect(pinsModule.listPinsFeishu).toHaveBeenCalledWith(
+      expect.objectContaining({ chatId: "oc_explicit" }),
     );
   });
 

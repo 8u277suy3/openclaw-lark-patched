@@ -419,21 +419,52 @@ function normalizePinChatId(raw) {
     const id = (m ? m[1] : v).trim();
     return /^oc_[a-z0-9]+$/i.test(id) ? id : undefined;
 }
-async function handleListPins(cfg, params, accountId, toolContext) {
-    const chatId = (0, param_readers_1.readStringParam)(params, 'chatId') ??
-        (0, param_readers_1.readStringParam)(params, 'channelId') ??
-        normalizePinChatId(params.target) ??
-        normalizePinChatId(params.to) ??
-        // Fallback: the invoking session's current conversation, so a bare
-        // list-pins call works in DMs/groups (mirrors pin/send routing).
-        // Cross-conversation requests are still gated by the framework's
-        // delegated-action check before reaching this handler.
-        (typeof toolContext?.currentChannelId === 'string' && toolContext.currentChannelId
-            ? toolContext.currentChannelId
-            : undefined);
-    if (!chatId) {
-        throw new Error('Feishu list-pins requires chatId or channelId (or call it from the conversation whose pins you want).');
+/**
+ * Extract a bare open_id from synthetic DM targets such as `user:ou_x`,
+ * `dm:ou_x`, `p2p:ou_x` or a bare `ou_x`. Returns undefined for non-user
+ * targets so they can be handled by {@link normalizePinChatId} instead.
+ */
+function extractPinOpenId(raw) {
+    if (typeof raw !== 'string')
+        return undefined;
+    const v = raw.trim();
+    const m = /^(?:(?:user|dm|p2p|open_id):)?(ou_[a-z0-9]+)$/i.exec(v);
+    return m ? m[1] : undefined;
+}
+/**
+ * Resolve the chat whose pins should be listed, in priority order:
+ * explicit chatId/channelId params → target/to params → the invoking
+ * session's current conversation (toolContext.currentChannelId).
+ *
+ * DM conversations surface as synthetic targets (`user:ou_xxx`); those are
+ * resolved to the real p2p chat id via the bot chat list, since the Feishu
+ * pins API only accepts `oc_` chat ids.
+ */
+async function resolveListPinsChatId(cfg, params, accountId, toolContext) {
+    const candidates = [
+        (0, param_readers_1.readStringParam)(params, 'chatId'),
+        (0, param_readers_1.readStringParam)(params, 'channelId'),
+        params.target,
+        params.to,
+        toolContext?.currentChannelId,
+    ];
+    for (const candidate of candidates) {
+        const chatId = normalizePinChatId(candidate);
+        if (chatId)
+            return chatId;
     }
+    for (const candidate of candidates) {
+        const openId = extractPinOpenId(candidate);
+        if (openId) {
+            const chatId = await (0, pins_1.resolveP2PChatIdFeishu)({ cfg, openId, accountId });
+            log.info(`list-pins: resolved synthetic target ${String(candidate)} → ${chatId}`);
+            return chatId;
+        }
+    }
+    throw new Error('Feishu list-pins requires chatId or channelId (or call it from the conversation whose pins you want).');
+}
+async function handleListPins(cfg, params, accountId, toolContext) {
+    const chatId = await resolveListPinsChatId(cfg, params, accountId, toolContext);
     const startTime = (0, param_readers_1.readStringParam)(params, 'startTime') ??
         (0, param_readers_1.readStringParam)(params, 'start_time');
     const endTime = (0, param_readers_1.readStringParam)(params, 'endTime') ??
