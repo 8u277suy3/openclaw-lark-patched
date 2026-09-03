@@ -27,6 +27,7 @@ exports.DEFAULT_FOOTER_CONFIG = {
     cache: false,
     context: false,
     model: false,
+    provider: false,
 };
 // ---------------------------------------------------------------------------
 // Resolver
@@ -47,5 +48,6 @@ function resolveFooterConfig(cfg) {
         cache: cfg.cache ?? exports.DEFAULT_FOOTER_CONFIG.cache,
         context: cfg.context ?? exports.DEFAULT_FOOTER_CONFIG.context,
         model: cfg.model ?? exports.DEFAULT_FOOTER_CONFIG.model,
+        provider: cfg.provider ?? exports.DEFAULT_FOOTER_CONFIG.provider,
     };
 }
