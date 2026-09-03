@@ -12,7 +12,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.createPinFeishu = createPinFeishu;
 exports.removePinFeishu = removePinFeishu;
 exports.listPinsFeishu = listPinsFeishu;
-exports.resolveP2PChatIdFeishu = resolveP2PChatIdFeishu;
+exports.resolveChatIdFromMessageFeishu = resolveChatIdFromMessageFeishu;
 const lark_client_1 = require("../../core/lark-client.js");
 
 /**
@@ -75,36 +75,26 @@ async function removePinFeishu({ cfg, messageId, accountId }) {
 }
 
 /**
- * Resolve the p2p chat id (oc_xxx) between this app and a user.
+ * Resolve the chat id that owns a given message.
  *
- * Bot-identity equivalent of message-read's user-OAuth batch_query:
- * lists chats shared with the given open_id (`im/v1/chats` with user_id
- * filter) and returns the p2p one. Throws when no p2p chat exists.
+ * DM conversations surface as synthetic `user:ou_xxx` targets and
+ * `im/v1/chats` only lists GROUP chats (p2p chats never appear there),
+ * so the current turn's message is the ground truth for the real p2p
+ * chat id. Bot identity can only read messages in its own conversations,
+ * which keeps the "exact current conversation" semantics intact.
  */
-async function resolveP2PChatIdFeishu({ cfg, openId, accountId }) {
+async function resolveChatIdFromMessageFeishu({ cfg, messageId, accountId }) {
     const client = lark_client_1.LarkClient.fromCfg(cfg, accountId).sdk;
-    let pageToken;
-    let scanned = 0;
-    do {
-        const response = await client.im.chat.list({
-            params: {
-                user_id: openId,
-                user_id_type: 'open_id',
-                page_size: 100,
-                ...(pageToken ? { page_token: pageToken } : {}),
-            },
-        });
-        assertLarkOk(response, `list chats for ${openId}`);
-        const items = response.data?.items ?? [];
-        for (const chat of items) {
-            if (chat.chat_mode === 'p2p' && typeof chat.chat_id === 'string' && chat.chat_id) {
-                return chat.chat_id;
-            }
-        }
-        scanned += items.length;
-        pageToken = response.data?.has_more ? response.data?.page_token : undefined;
-    } while (pageToken && scanned < 1000);
-    throw new Error(`no p2p chat found with open_id=${openId} (has this user ever messaged the bot?)`);
+    const response = await client.request({
+        method: 'GET',
+        url: `/open-apis/im/v1/messages/${messageId}`,
+    });
+    assertLarkOk(response, `get message ${messageId}`);
+    const chatId = response?.data?.items?.[0]?.chat_id;
+    if (typeof chatId !== 'string' || !chatId) {
+        throw new Error(`message ${messageId} returned no chat_id`);
+    }
+    return chatId;
 }
 
 /**

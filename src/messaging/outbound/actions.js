@@ -420,25 +420,16 @@ function normalizePinChatId(raw) {
     return /^oc_[a-z0-9]+$/i.test(id) ? id : undefined;
 }
 /**
- * Extract a bare open_id from synthetic DM targets such as `user:ou_x`,
- * `dm:ou_x`, `p2p:ou_x` or a bare `ou_x`. Returns undefined for non-user
- * targets so they can be handled by {@link normalizePinChatId} instead.
- */
-function extractPinOpenId(raw) {
-    if (typeof raw !== 'string')
-        return undefined;
-    const v = raw.trim();
-    const m = /^(?:(?:user|dm|p2p|open_id):)?(ou_[a-z0-9]+)$/i.exec(v);
-    return m ? m[1] : undefined;
-}
-/**
  * Resolve the chat whose pins should be listed, in priority order:
  * explicit chatId/channelId params → target/to params → the invoking
  * session's current conversation (toolContext.currentChannelId).
  *
- * DM conversations surface as synthetic targets (`user:ou_xxx`); those are
- * resolved to the real p2p chat id via the bot chat list, since the Feishu
- * pins API only accepts `oc_` chat ids.
+ * DM conversations surface as synthetic targets (`user:ou_xxx`) and the
+ * Feishu chat list never includes p2p chats (verified 2026-09-03), so the
+ * final fallback grounds the real chat id in the current turn's message
+ * (`im/v1/messages/{id}` → chat_id) — a bot-identity lookup that only
+ * works for conversations the bot is actually part of, preserving the
+ * "exact current conversation" semantics of the pin guards.
  */
 async function resolveListPinsChatId(cfg, params, accountId, toolContext) {
     const candidates = [
@@ -453,13 +444,18 @@ async function resolveListPinsChatId(cfg, params, accountId, toolContext) {
         if (chatId)
             return chatId;
     }
-    for (const candidate of candidates) {
-        const openId = extractPinOpenId(candidate);
-        if (openId) {
-            const chatId = await (0, pins_1.resolveP2PChatIdFeishu)({ cfg, openId, accountId });
-            log.info(`list-pins: resolved synthetic target ${String(candidate)} → ${chatId}`);
-            return chatId;
-        }
+    // DM fallback: real chat id of the conversation carrying this turn.
+    const currentMessageId = typeof toolContext?.currentMessageId === 'string' && toolContext.currentMessageId
+        ? toolContext.currentMessageId
+        : undefined;
+    if (currentMessageId) {
+        const chatId = await (0, pins_1.resolveChatIdFromMessageFeishu)({
+            cfg,
+            messageId: currentMessageId,
+            accountId,
+        });
+        log.info(`list-pins: resolved chat ${chatId} from current message ${currentMessageId}`);
+        return chatId;
     }
     throw new Error('Feishu list-pins requires chatId or channelId (or call it from the conversation whose pins you want).');
 }
