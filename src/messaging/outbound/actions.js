@@ -178,7 +178,7 @@ exports.feishuMessageActions = {
                 case 'unpin':
                     return await handleUnpin(cfg, params, aid);
                 case 'list-pins':
-                    return await handleListPins(cfg, params, aid);
+                    return await handleListPins(cfg, params, aid, toolContext);
                 default:
                     throw new Error(`Action "${action}" is not supported for Feishu. ` +
                         `Supported actions: ${Array.from(SUPPORTED_ACTIONS).join(', ')}.`);
@@ -403,11 +403,36 @@ async function handleUnpin(cfg, params, accountId) {
     log.info(`unpin: done, messageId=${messageId}`);
     return (0, sdk_compat_1.jsonResult)({ ok: true, messageId, unpinned: true });
 }
-async function handleListPins(cfg, params, accountId) {
+/**
+ * Normalise a chat id from a `target`/`to`-style param. Accepts bare
+ * `oc_xxx` as well as prefixed forms like `chat:oc_xxx` / `channel:oc_xxx` /
+ * `group:oc_xxx`. Returns undefined for non-chat targets (e.g. `user:ou_xxx`)
+ * so the current-conversation fallback can take over.
+ */
+function normalizePinChatId(raw) {
+    if (typeof raw !== 'string')
+        return undefined;
+    const v = raw.trim();
+    if (!v)
+        return undefined;
+    const m = /^(?:chat|channel|group):(.+)$/i.exec(v);
+    const id = (m ? m[1] : v).trim();
+    return /^oc_[a-z0-9]+$/i.test(id) ? id : undefined;
+}
+async function handleListPins(cfg, params, accountId, toolContext) {
     const chatId = (0, param_readers_1.readStringParam)(params, 'chatId') ??
-        (0, param_readers_1.readStringParam)(params, 'channelId');
+        (0, param_readers_1.readStringParam)(params, 'channelId') ??
+        normalizePinChatId(params.target) ??
+        normalizePinChatId(params.to) ??
+        // Fallback: the invoking session's current conversation, so a bare
+        // list-pins call works in DMs/groups (mirrors pin/send routing).
+        // Cross-conversation requests are still gated by the framework's
+        // delegated-action check before reaching this handler.
+        (typeof toolContext?.currentChannelId === 'string' && toolContext.currentChannelId
+            ? toolContext.currentChannelId
+            : undefined);
     if (!chatId) {
-        throw new Error('Feishu list-pins requires chatId or channelId.');
+        throw new Error('Feishu list-pins requires chatId or channelId (or call it from the conversation whose pins you want).');
     }
     const startTime = (0, param_readers_1.readStringParam)(params, 'startTime') ??
         (0, param_readers_1.readStringParam)(params, 'start_time');

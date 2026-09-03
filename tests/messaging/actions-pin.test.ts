@@ -90,6 +90,41 @@ describe("message actions — pin routing", () => {
     );
   });
 
+  it("normalises prefixed target for list-pins", async () => {
+    await feishuMessageActions.handleAction({
+      action: "list-pins",
+      params: { target: "chat:oc_7" },
+      cfg: {},
+    });
+    expect(pinsModule.listPinsFeishu).toHaveBeenCalledWith(
+      expect.objectContaining({ chatId: "oc_7" }),
+    );
+  });
+
+  it("falls back to current conversation chatId for bare list-pins", async () => {
+    await feishuMessageActions.handleAction({
+      action: "list-pins",
+      params: {},
+      cfg: {},
+      toolContext: { currentChannelId: "oc_42" },
+    });
+    expect(pinsModule.listPinsFeishu).toHaveBeenCalledWith(
+      expect.objectContaining({ chatId: "oc_42" }),
+    );
+  });
+
+  it("ignores user: targets and falls back to current conversation", async () => {
+    await feishuMessageActions.handleAction({
+      action: "list-pins",
+      params: { target: "user:ou_abc" },
+      cfg: {},
+      toolContext: { currentChannelId: "oc_43" },
+    });
+    expect(pinsModule.listPinsFeishu).toHaveBeenCalledWith(
+      expect.objectContaining({ chatId: "oc_43" }),
+    );
+  });
+
   it("rejects list-pins without chatId", async () => {
     await expect(
       feishuMessageActions.handleAction({ action: "list-pins", params: {}, cfg: {} }),
