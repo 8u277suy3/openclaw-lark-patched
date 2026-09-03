@@ -56,13 +56,14 @@ exports.parseOggOpusDuration = parseOggOpusDuration;
 exports.parseMp4Duration = parseMp4Duration;
 exports.uploadAndSendMediaLark = uploadAndSendMediaLark;
 exports.fetchRemoteImageBuffer = fetchRemoteImageBuffer;
-const dns = __importStar(require("node:dns/promises"));
+exports.isImageMediaUrl = isImageMediaUrl;
+exports.uploadImageFromUrlLark = uploadImageFromUrlLark;
 const fs = __importStar(require("node:fs"));
-const net = __importStar(require("node:net"));
 const os = __importStar(require("node:os"));
 const path = __importStar(require("node:path"));
 const node_stream_1 = require("node:stream");
 const lark_client_1 = require("../../core/lark-client.js");
+const ssrf_1 = require("../../core/ssrf.js");
 const targets_1 = require("../../core/targets.js");
 const lark_logger_1 = require("../../core/lark-logger.js");
 const media_url_utils_1 = require("./media-url-utils.js");
@@ -304,6 +305,41 @@ async function uploadImageLark(params) {
             `Response: ${JSON.stringify(response).slice(0, 200)}`);
     }
     return { imageKey };
+}
+// ---------------------------------------------------------------------------
+// Multi-image post helpers (single rich-text post path)
+// ---------------------------------------------------------------------------
+/**
+ * Check whether a media URL points at an image (by file extension).
+ *
+ * Local paths and remote URLs are both resolved to a file name via
+ * `resolveFileNameFromMediaUrl`, then checked against the known image
+ * extension set. URLs whose path carries no image extension (e.g. signed
+ * download URLs) resolve to `false`, so callers can safely fall back to
+ * per-media sends instead of mis-routing a video or document.
+ */
+function isImageMediaUrl(mediaUrl) {
+    if (!mediaUrl)
+        return false;
+    const fileName = (0, media_url_utils_1.resolveFileNameFromMediaUrl)(mediaUrl);
+    if (!fileName)
+        return false;
+    return isImageFileName(fileName);
+}
+/**
+ * Fetch an image from a URL (or an allowed local path) and upload it to
+ * Feishu IM storage, returning the assigned `image_key`.
+ *
+ * Wraps the internal {@link fetchMediaBuffer} + {@link uploadImageLark} pair
+ * so the multi-image post path can collect image_keys for every URL before
+ * issuing a single combined message. Any fetch/upload failure propagates to
+ * the caller, which then falls back to the legacy per-media send path.
+ */
+async function uploadImageFromUrlLark(params) {
+    const { cfg, mediaUrl, mediaLocalRoots, accountId } = params;
+    const buffer = await fetchMediaBuffer(mediaUrl, mediaLocalRoots);
+    log.debug(`uploadImageFromUrlLark: fetched "${mediaUrl}", ${buffer.length} bytes`);
+    return uploadImageLark({ cfg, image: buffer, imageType: 'message', accountId });
 }
 // ---------------------------------------------------------------------------
 // uploadFileLark
@@ -739,77 +775,29 @@ async function fetchRemoteImageBuffer(url) {
     return fetchMediaBuffer(url, undefined);
 }
 // ---------------------------------------------------------------------------
-// SSRF protection — private/reserved IP filtering
+// SSRF protection — SDK fetch guard (DNS pinning + private-IP blocking)
 // ---------------------------------------------------------------------------
-/**
- * Check whether an IP address belongs to a private or reserved range.
- *
- * Blocks: 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16,
- * 169.254.0.0/16 (link-local / cloud metadata), 0.0.0.0,
- * IPv6 loopback (::1), link-local (fe80::), ULA (fc/fd).
- */
-function isPrivateIP(ip) {
-    // IPv4 private / reserved ranges
-    if (ip.startsWith('127.'))
-        return true;
-    if (ip.startsWith('10.'))
-        return true;
-    if (ip.startsWith('192.168.'))
-        return true;
-    if (ip.startsWith('169.254.'))
-        return true;
-    if (ip === '0.0.0.0')
-        return true;
-    if (/^172\.(1[6-9]|2[0-9]|3[01])\./.test(ip))
-        return true;
-    // IPv6 private / reserved ranges
-    if (ip === '::1' || ip === '::')
-        return true;
-    if (ip.startsWith('fe80:'))
-        return true; // link-local
-    if (ip.startsWith('fc') || ip.startsWith('fd'))
-        return true; // ULA
-    return false;
-}
 /**
  * Validate that a remote URL does not target private/reserved IP addresses.
  *
- * Resolves the hostname via DNS and checks all returned addresses.
- * Rejects URLs with non-http(s) protocols.
+ * Delegates to the OpenClaw SDK `fetchWithSsrFGuard` (same implementation the
+ * official @openclaw/feishu plugin uses for its outbound fetches):
+ * - DNS-pinned lookup prevents DNS-rebinding attacks (resolve once, reuse)
+ * - Blocks IPv4 + IPv6 private/reserved ranges (loopback, link-local, ULA,
+ *   cloud-metadata 169.254.x.x, etc.)
+ * - Re-validates every redirect hop against the same policy
+ *
+ * @param {string} raw remote http(s) URL
+ * @returns {Promise<void>} resolves when the URL is safe to fetch
  */
 async function validateRemoteUrl(raw) {
+    // guardedRemoteFetch performs the SSRF check before connecting; a blocked
+    // target rejects with SsrFBlockedError before any bytes are exchanged.
+    // We only need a protocol sanity check here to fail fast with a clear error.
     const parsed = new URL(raw);
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
         throw new Error(`[feishu-media] Unsupported protocol "${parsed.protocol}" in URL "${raw}". ` +
             `Only http:// and https:// are allowed for remote media.`);
-    }
-    const hostname = parsed.hostname.replace(/^\[|\]$/g, '');
-    if (net.isIP(hostname)) {
-        // URL contains a literal IP address — check it directly.
-        if (isPrivateIP(hostname)) {
-            throw new Error(`[feishu-media] Access to private/reserved IP "${hostname}" is denied (SSRF protection). ` +
-                `URL: "${raw}"`);
-        }
-    }
-    else {
-        // Resolve the domain and check every address it points to.
-        try {
-            const addresses = await dns.resolve(hostname);
-            for (const addr of addresses) {
-                if (isPrivateIP(addr)) {
-                    throw new Error(`[feishu-media] Domain "${hostname}" resolves to private/reserved IP "${addr}" (SSRF protection). ` +
-                        `URL: "${raw}"`);
-                }
-            }
-        }
-        catch (err) {
-            if (err instanceof Error && err.message.includes('SSRF protection')) {
-                throw err;
-            }
-            // DNS failure is logged but not blocking — the subsequent fetch will
-            // produce a clear network error if the host is truly unreachable.
-            log.warn(`[feishu-media] DNS resolution failed for "${hostname}": ${err}`);
-        }
     }
 }
 // ---------------------------------------------------------------------------
@@ -849,16 +837,24 @@ async function fetchMediaBuffer(urlOrPath, localRoots) {
     log.info(`fetching remote media: ${raw}`);
     // Retry transient server errors (502/503/504) with bounded backoff.
     const arrayBuffer = await withRetry(async () => {
-        const response = await fetch(raw, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
-        if (!response.ok) {
-            // Attach status so withRetry can inspect it.
-            const err = new Error(`[feishu-media] Failed to fetch media from "${raw}": ` +
-                `HTTP ${response.status} ${response.statusText}. ` +
-                `Verify the URL is accessible and returns a valid media resource.`);
-            err.status = response.status;
-            throw err;
+        const { response, release } = await (0, ssrf_1.guardedRemoteFetch)(raw, undefined, {
+            timeoutMs: FETCH_TIMEOUT_MS,
+            auditContext: 'feishu-media-fetch',
+        });
+        try {
+            if (!response.ok) {
+                // Attach status so withRetry can inspect it.
+                const err = new Error(`[feishu-media] Failed to fetch media from "${raw}": ` +
+                    `HTTP ${response.status} ${response.statusText}. ` +
+                    `Verify the URL is accessible and returns a valid media resource.`);
+                err.status = response.status;
+                throw err;
+            }
+            return response.arrayBuffer();
         }
-        return response.arrayBuffer();
+        finally {
+            await release();
+        }
     }, `fetchMedia(${raw})`);
     log.debug(`remote media fetched: ${raw}, ${arrayBuffer.byteLength} bytes`);
     return Buffer.from(arrayBuffer);

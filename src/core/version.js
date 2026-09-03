@@ -25,9 +25,8 @@ function getPluginVersion() {
     if (cachedVersion)
         return cachedVersion;
     try {
-        // 当前文件: src/core/version.js → 向上两级到达项目根目录
-        // 注意：必须使用 CJS 内建的 __filename/__dirname，不能用 import.meta——
-        // 含 import.meta 的文件会被 Node >=22 语法检测判定为 ESM，导致 require() 拿到空命名空间。
+        // 当前文件: src/core/version.ts → 向上两级到达项目根目录
+        // OpenClaw 2.0 补丁: 用 __dirname 避免 import.meta 触发 Node 24 模块探测
         const packageJsonPath = (0, node_path_1.join)(__dirname, '..', '..', 'package.json');
         const raw = (0, node_fs_1.readFileSync)(packageJsonPath, 'utf8');
         const pkg = JSON.parse(raw);
@@ -61,7 +60,7 @@ function getPlatform() {
  *
  * @example
  * ```typescript
- * getUserAgent() // => "openclaw-lark/2026.2.28.5/mac"
+ * getUserAgent() // => "openclaw-lark/2026.7.16/mac"
  * ```
  */
 function getUserAgent() {

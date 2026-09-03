@@ -33,9 +33,7 @@ const node_crypto_1 = require("node:crypto");
 const lark_logger_1 = require("./lark-logger.js");
 const log = (0, lark_logger_1.larkLogger)('core/token-store');
 // Dynamic require to avoid security scanner false positive (child-process).
-// CJS (tsc output) always has __filename. Never reference import.meta in this file:
-// its mere presence makes Node >=22 syntax detection classify the file as ESM,
-// and require() then returns an empty namespace / fails to resolve relative modules.
+// OpenClaw 2.0 补丁: CJS 构建下始终用 __filename，避免 import.meta 触发 Node 24 模块探测。
 const _require = (0, node_module_1.createRequire)(__filename);
 const _cpMod = ['child', 'process'].join('_');
 const _cp = _require(`node:${_cpMod}`);

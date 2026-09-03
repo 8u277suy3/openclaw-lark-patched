@@ -107,7 +107,7 @@ function secretRefsEqual(a, b) {
  * - Both strings: direct `===`.
  * - Both SecretRef objects: compare `source`, `provider`, `id` explicitly.
  * - Mixed (string vs SecretRef): treat as equal — the platform resolves the
- *   SecretRef at startup (producing the cached string) but `loadConfig()`
+ *   SecretRef at startup (producing the cached string) but `config.current()`
  *   returns the raw object on subsequent calls.  Detecting SecretRef identity
  *   changes is not useful here because the platform does not re-resolve
  *   feishu secrets on reload, so a new SecretRef would be equally unusable.
@@ -438,25 +438,25 @@ exports.LarkClient = LarkClient;
  *
  * The `config` object captured in tool-registration closures may be stale
  * after a hot-reload, so we prefer the live config from
- * `LarkClient.runtime.config.loadConfig()`.  However, `loadConfig()` may
+ * `LarkClient.runtime.config.current()`.  However, `config.current()` may
  * return `{}` when the runtime config snapshot has been cleared (e.g. in
  * isolated cron sessions), so we fall back to the closure-captured config
  * when the live result lacks Feishu credentials.
  *
  * @param fallback - Config to use when the runtime is not yet initialised
- *   or when `loadConfig()` returns an incomplete config.
+ *   or when `config.current()` returns an incomplete config.
  */
 function getResolvedConfig(fallback) {
     try {
-        const live = LarkClient.runtime.config.loadConfig();
-        // loadConfig() may return {} (empty config) when runtimeConfigSnapshot
+        const live = LarkClient.runtime.config.current();
+        // config.current() may return {} (empty config) when runtimeConfigSnapshot
         // has been cleared (e.g. after writeConfigFile, secrets teardown, or
         // concurrent cron race conditions in isolated sessions).  In that case
         // the closure-captured fallback still holds a valid resolved config.
         if (live?.channels?.feishu)
             return live;
         if (fallback?.channels?.feishu) {
-            log.debug(`loadConfig() returned config without channels.feishu, using fallback`);
+            log.debug(`config.current() returned config without channels.feishu, using fallback`);
             return fallback;
         }
         return live;
