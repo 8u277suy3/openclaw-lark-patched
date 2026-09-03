@@ -65,3 +65,7 @@
 ```
 
 改动本仓库后同步该目录并重启网关。
+
+## 自研修复（超越 fork 的部分）
+
+- **deliverMessage 多图合并**（commit 9055a63）：fork 的 multiImageMode 只接在 outbound.sendPayload 上，而 message 工具发送走 actions.handleAction -> deliverMessage，原实现只读单数 media 字段，第二张图起被静默丢弃（fork 同样有此缺陷）。本包已改为读 params.mediaUrls 数组并在工具路径实现合并 post / 顺序回退。**官方或 fork 升级重放补丁时必须保留此修复。**
