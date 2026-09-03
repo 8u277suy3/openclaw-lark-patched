@@ -1,0 +1,17 @@
+diff --git "a/C:\\Temp\\ol-patched\\pristine\\pkg\\src\\core\\version.js" "b/C:\\Temp\\ol-patched\\patched\\src\\core\\version.js"
+index 31a2300..2b533c7 100644
+--- "a/C:\\Temp\\ol-patched\\pristine\\pkg\\src\\core\\version.js"
++++ "b/C:\\Temp\\ol-patched\\patched\\src\\core\\version.js"
+@@ -25,9 +25,9 @@ function getPluginVersion() {
+     if (cachedVersion)
+         return cachedVersion;
+     try {
+-        // 当前文件: src/core/version.ts → 向上两级到达项目根目录
+-        const __filename = (0, node_url_1.fileURLToPath)(import.meta.url);
+-        const __dirname = (0, node_path_1.dirname)(__filename);
++        // 当前文件: src/core/version.js → 向上两级到达项目根目录
++        // 注意：必须使用 CJS 内建的 __filename/__dirname，不能用 import.meta——
++        // 含 import.meta 的文件会被 Node >=22 语法检测判定为 ESM，导致 require() 拿到空命名空间。
+         const packageJsonPath = (0, node_path_1.join)(__dirname, '..', '..', 'package.json');
+         const raw = (0, node_fs_1.readFileSync)(packageJsonPath, 'utf8');
+         const pkg = JSON.parse(raw);

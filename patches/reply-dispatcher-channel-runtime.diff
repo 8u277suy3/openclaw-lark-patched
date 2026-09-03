@@ -1,0 +1,13 @@
+diff --git "a/C:\\Temp\\ol-patched\\pristine\\pkg\\src\\card\\reply-dispatcher.js" "b/C:\\Temp\\ol-patched\\patched\\src\\card\\reply-dispatcher.js"
+index 2b24315..b6f2aec 100644
+--- "a/C:\\Temp\\ol-patched\\pristine\\pkg\\src\\card\\reply-dispatcher.js"
++++ "b/C:\\Temp\\ol-patched\\patched\\src\\card\\reply-dispatcher.js"
+@@ -13,7 +13,7 @@
+  */
+ Object.defineProperty(exports, "__esModule", { value: true });
+ exports.createFeishuReplyDispatcher = createFeishuReplyDispatcher;
+-const channel_runtime_1 = require("openclaw/plugin-sdk/channel-runtime");
++const channel_runtime_1 = require("openclaw/plugin-sdk/channel-outbound"); // 8.2: channel-runtime merged into channel-outbound (createReplyPrefixContext/createTypingCallbacks verified)
+ const channel_feedback_1 = require("openclaw/plugin-sdk/channel-feedback");
+ const accounts_1 = require("../core/accounts.js");
+ const footer_config_1 = require("../core/footer-config.js");
