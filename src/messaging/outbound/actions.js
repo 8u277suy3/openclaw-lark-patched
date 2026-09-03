@@ -26,6 +26,7 @@ const reactions_1 = require("./reactions.js");
 const pins_1 = require("./pins.js");
 const deliver_1 = require("./deliver.js");
 const media_1 = require("./media.js");
+const multi_image_mode_1 = require("./multi-image-mode.js");
 const log = (0, lark_logger_1.larkLogger)('outbound/actions');
 const FEISHU_SEND_TEXT_DESCRIPTION = 'Text to send as a separate Feishu message. During a normal Feishu streaming-card reply, do not call send just to repeat or finalize the same answer; return the final answer normally so the active card can be completed by the reply dispatcher. Use send only when the user explicitly needs an additional separate message.';
 const FEISHU_MESSAGE_TOOL_SCHEMA = {
@@ -114,6 +115,13 @@ function readFeishuSendParams(params, toolContext) {
         (0, param_readers_1.readStringParam)(params, 'path') ??
         (0, param_readers_1.readStringParam)(params, 'filePath') ??
         (0, param_readers_1.readStringParam)(params, 'url');
+    // Framework-level media list: the message tool always sets `mediaUrls`
+    // (attachments + MEDIA directives merged). Honour the full array so
+    // multi-image sends can be merged into one post instead of dropping
+    // everything after the first item.
+    const mediaUrls = Array.isArray(params.mediaUrls)
+        ? params.mediaUrls.filter((v) => typeof v === 'string' && v.trim()).map((v) => v.trim())
+        : [];
     const fileName = (0, param_readers_1.readStringParam)(params, 'fileName') ?? (0, param_readers_1.readStringParam)(params, 'name');
     // Thread routing: when targeting the current chat (or unspecified),
     // inherit thread context from SDK toolContext.
@@ -126,6 +134,7 @@ function readFeishuSendParams(params, toolContext) {
         to,
         text,
         mediaUrl: mediaUrl ?? undefined,
+        mediaUrls,
         fileName: fileName ?? undefined,
         replyToMessageId: replyToMessageId ?? undefined,
         replyInThread,
@@ -193,20 +202,22 @@ exports.feishuMessageActions = {
  * On media upload failure, falls back to sending the URL as a text link.
  */
 async function deliverMessage(cfg, sp, accountId, mediaLocalRoots) {
-    const { to, text, mediaUrl, fileName, replyToMessageId, replyInThread, card } = sp;
-    const payloadType = card ? 'card' : mediaUrl ? 'media' : 'text';
+    const { to, text, fileName, replyToMessageId, replyInThread, card } = sp;
+    const mediaList = sp.mediaUrls?.length ? sp.mediaUrls : sp.mediaUrl ? [sp.mediaUrl] : [];
+    const hasMedia = mediaList.length > 0;
+    const payloadType = card ? 'card' : hasMedia ? 'media' : 'text';
     const target = to || replyToMessageId || 'unknown';
     log.info(`deliverMessage: type=${payloadType}, target=${target}, ` +
         `isReply=${Boolean(replyToMessageId)}, replyInThread=${replyInThread}, ` +
-        `textLen=${text.trim().length}, hasMedia=${Boolean(mediaUrl)}, ` +
+        `textLen=${text.trim().length}, mediaCount=${mediaList.length}, ` +
         `fileName=${fileName ?? '(none)'}`);
-    if (!text.trim() && !card && !mediaUrl) {
+    if (!text.trim() && !card && !hasMedia) {
         log.warn('deliverMessage: no payload, rejecting');
         throw new Error('send requires at least one of: message, card, or media.');
     }
     const sendCtx = { cfg, to, replyToMessageId, replyInThread, accountId };
     // Send text first if both text and card/media are present.
-    if (text.trim() && (card || mediaUrl)) {
+    if (text.trim() && (card || hasMedia)) {
         log.info(`deliverMessage: sending preceding text ` + `(${text.length} chars) before ${payloadType}`);
         await (0, deliver_1.sendTextLark)({ ...sendCtx, text });
     }
@@ -216,9 +227,47 @@ async function deliverMessage(cfg, sp, accountId, mediaLocalRoots) {
         log.info(`deliverMessage: card sent, messageId=${result.messageId}`);
         return (0, sdk_compat_1.jsonResult)({ ok: true, messageId: result.messageId, chatId: result.chatId });
     }
-    // Media path — uses uploadAndSendMediaLark directly to support fileName.
-    if (mediaUrl) {
-        return await deliverMedia(cfg, sp, accountId, mediaLocalRoots);
+    // Media path.
+    if (hasMedia) {
+        // Multi-image merge: same semantics as outbound.sendPayload (F2).
+        // ≥2 image URLs merge into a single rich-text post; any failure
+        // falls back to sequential per-image sends so nothing is lost.
+        const account = (0, accounts_1.getLarkAccount)(cfg, accountId ?? undefined);
+        const multiImageMode = (0, multi_image_mode_1.resolveMultiImageMode)(account?.config);
+        if (multiImageMode === 'post' &&
+            mediaList.length >= 2 &&
+            mediaList.every((u) => (0, media_1.isImageMediaUrl)(u))) {
+            try {
+                const imageKeys = [];
+                for (const u of mediaList) {
+                    const uploaded = await (0, media_1.uploadImageFromUrlLark)({
+                        cfg,
+                        mediaUrl: u,
+                        mediaLocalRoots,
+                        accountId: accountId ?? undefined,
+                    });
+                    imageKeys.push(uploaded.imageKey);
+                }
+                const groupResult = await (0, deliver_1.sendImageGroupPostLark)({
+                    ...sendCtx,
+                    imageKeys,
+                });
+                log.info(`deliverMessage: sent ${imageKeys.length} images as a single post, messageId=${groupResult.messageId}`);
+                return (0, sdk_compat_1.jsonResult)({ ok: true, messageId: groupResult.messageId, chatId: groupResult.chatId });
+            }
+            catch (err) {
+                log.warn(`deliverMessage: multi-image post failed ` +
+                    `(${err instanceof Error ? err.message : String(err)}), ` +
+                    `falling back to sequential image sends`);
+            }
+        }
+        // Single media, mixed media, or sequential mode: keep legacy per-item
+        // behaviour (fileName support + text-link fallback on upload error).
+        let lastResult;
+        for (const u of mediaList) {
+            lastResult = await deliverMedia(cfg, { ...sp, mediaUrl: u }, accountId, mediaLocalRoots);
+        }
+        return lastResult;
     }
     // Text-only path.
     const result = await (0, deliver_1.sendTextLark)({ ...sendCtx, text });
