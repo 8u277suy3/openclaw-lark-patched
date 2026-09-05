@@ -409,14 +409,20 @@ function registerFeishuDriveFileTool(api) {
                                     file: fileBuffer,
                                 },
                             }, opts), { as: 'user' });
-                            (0, helpers_1.assertLarkOk)(res);
-                            // [yaqin-fix-20260906] 假成功防护：code=0 但无 file_token 即内容未落盘，不得报告成功
-                            if (!res.data?.file_token) {
-                                throw new Error(`upload_all returned success without file_token (fake success; content likely not stored) [file_name=${fileName}, size=${fileSize}]`);
+                            // [yaqin-fix-20260906] SDK uploadAll 已拆响应信封：直接返回 {file_token,...}（无 code 字段），
+                            // 旧代码读 res.data.file_token 永远 undefined → 假成功+丢真 token（回归实证：文件实际已完整落盘）。
+                            // 兼容两种形状：信封 {code,data:{file_token}} 与拆封体 {file_token}。
+                            const upData = res && typeof res === 'object' ? (res.data?.file_token ? res.data : res) : null;
+                            if (!upData?.file_token) {
+                                const bizCode = res?.code;
+                                if (bizCode !== undefined && bizCode !== 0) {
+                                    throw new Error(`upload_all failed (code=${bizCode}, msg=${res?.msg ?? ''})`);
+                                }
+                                throw new Error(`upload_all returned no file_token (fake success guard) [file=${fileName}, size=${fileSize}]`);
                             }
-                            log.info(`upload: file_token=${res.data?.file_token}`);
+                            log.info(`upload: file_token=${upData.file_token}`);
                             return (0, helpers_1.json)({
-                                file_token: res.data?.file_token,
+                                file_token: upData.file_token,
                                 file_name: fileName,
                                 size: fileSize,
                             });
