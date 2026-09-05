@@ -102,6 +102,23 @@ const FetchResourceSchema = typebox_1.Type.Object({
         description: '资源类型：image（图片消息中的图片）、file（文件/音频/视频消息中的文件）',
     }),
 });
+// [yaqin-fix-20260906] 流式错误体归一化：responseType=stream 时 axios 错误体也是流，
+// formatLarkError 无法读出真实 code/msg；先缓冲并解析为对象再交给错误处理。
+async function normalizeStreamError(err) {
+    const data = err?.response?.data;
+    if (data && typeof data.pipe === 'function' && typeof data.code !== 'number') {
+        try {
+            const chunks = [];
+            for await (const c of data)
+                chunks.push(c);
+            err.response.data = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        }
+        catch {
+            /* 保留原始错误，不阻断流程 */
+        }
+    }
+    return err;
+}
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
@@ -179,6 +196,7 @@ function registerFeishuImUserFetchResourceTool(api) {
                 }
             }
             catch (err) {
+                await normalizeStreamError(err); // [yaqin-fix-20260906] 暴露真实飞书错误码
                 return await (0, helpers_1.handleInvokeErrorWithAutoAuth)(err, cfg);
             }
         },

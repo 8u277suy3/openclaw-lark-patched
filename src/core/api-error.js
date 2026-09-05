@@ -76,8 +76,11 @@ function extractLarkApiCode(err) {
  * present it to the end user.
  */
 function assertLarkOk(res) {
-    if (!res.code || res.code === 0)
+    // [yaqin-fix-20260906] 严格校验：无 code 字段/空响应不再当成功放行（upload 假成功链路根因）
+    if (res && res.code === 0)
         return;
+    if (!res)
+        throw new Error('Feishu API returned empty response (no code field) — treated as failure');
     const permMsg = formatPermissionError(res.code, res.msg ?? '');
     if (permMsg)
         throw new Error(permMsg);

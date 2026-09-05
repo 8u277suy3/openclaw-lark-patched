@@ -89,6 +89,23 @@ const MIME_TO_EXT = {
 // ===========================================================================
 // Shared helpers
 // ===========================================================================
+// [yaqin-fix-20260906] 流式错误体归一化：responseType=stream 时错误体也是流，
+// formatLarkError 读不到真实 code/msg；先缓冲解析再报错。
+async function normalizeStreamError(err) {
+    const data = err?.response?.data;
+    if (data && typeof data.pipe === 'function' && typeof data.code !== 'number') {
+        try {
+            const chunks = [];
+            for await (const c of data)
+                chunks.push(c);
+            err.response.data = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        }
+        catch {
+            /* 保留原始错误，不阻断流程 */
+        }
+    }
+    return err;
+}
 /**
  * 从二进制响应中提取 Buffer、Content-Type。
  * SDK 的二进制响应可能有 getReadableStream()，也可能直接是 Buffer 等格式。
@@ -184,6 +201,7 @@ function registerFeishuImBotImageTool(api) {
                 });
             }
             catch (err) {
+                await normalizeStreamError(err); // [yaqin-fix-20260906] 暴露真实飞书错误码
                 log.error(`Error: ${(0, helpers_1.formatLarkError)(err)}`);
                 return (0, helpers_1.json)({ error: (0, helpers_1.formatLarkError)(err) });
             }
